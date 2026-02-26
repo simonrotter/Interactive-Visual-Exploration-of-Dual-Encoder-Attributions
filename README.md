@@ -1,16 +1,23 @@
-# Dual Encoder Attribution tool
+# Interactive Visual Exploration of Dual Encoder Attributions
 
-Text-Text / Text-Image Attribution Visualization
+This repository contains a tool for visualizing attributions from Dual Encoders for text-text pairs and text-image pairs. In this Version, the features are demonstrated with precomputed attribution scores in `.pkl` files.
+An extensive description of the project can be found in the accompanying paper (coming soon).
 
 ## Quickstart
 
-Using docker:
+##### Using the prebuilt package from the Release:
+
+Download the `.zip` file from the latest release and execute the `run.bat` or `run.sh` script.
+
+##### Using docker:
+
+Execute in root directory
 
 ```
 docker compose up
 ```
 
-Running manually:
+##### Running manually:
 
 ```
 cd app
