@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pillow
+numpy
+pandas
+pydantic
+spacy
+httpx
+python-multipart
