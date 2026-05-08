@@ -336,7 +336,6 @@ export default {
       const rowCollapsedVisual = collapsed.value.rows.map((modelIdx) => toVisualRowIndex(modelIdx))
       const colCollapsedVisual = collapsed.value.columns
 
-      // Add "true" to reverse the layout from top-down to bottom-up
       const rowLayout = buildAxisLayout(tokens_a.length, rowCollapsedVisual, chartHeight, true)
       const colLayout = buildAxisLayout(tokens_b.length, colCollapsedVisual, chartWidth)
 
@@ -638,6 +637,58 @@ export default {
             const isRowCollapsed = rowSlot.collapsed
             const isColCollapsed = colSlot.collapsed
 
+            // Handle Clicks/Hovers on single visible cells
+            if (!isRowCollapsed && !isColCollapsed) {
+              const i = rowIndices[0]
+              const j = colIndices[0]
+              const d = cellLookup.get(`${i},${j}`)
+
+              // Even if d doesnt exist (value 0) we want a rect for selection interaction
+              const rect = g
+                .append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', width)
+                .attr('height', height)
+                .attr('shape-rendering', 'geometricPrecision')
+                .style('pointer-events', 'all')
+                .on('click', (event) => {
+                  // Create a synthetic d if it's a 0-value cell to satisfy handler
+                  const activeD = d || { i, j, x: tokens_b[j], y: tokens_a[i], value: 0 }
+                  onClickHandler(event, activeD)
+                })
+
+              if (d && d.value !== 0) {
+                rect
+                  .style('fill', cellColor(d))
+                  .style('opacity', () => (!isLightMode ? highlightOpacity(d) : 1))
+                  .on('mouseover', function (event) {
+                    d3.select(this).classed('hovered', true)
+                    showTooltip(event, d)
+                  })
+                  .on('mousemove', function (event) {
+                    const shiftNow = event.shiftKey
+                    const tooltipEl = tooltip.node()
+                    if (tooltipEl._lastShift !== shiftNow) {
+                      tooltipEl._lastShift = shiftNow
+                      showTooltip(event, d)
+                    }
+                    tooltip
+                      .style('left', event.pageX + 12 + 'px')
+                      .style('top', event.pageY + 12 + 'px')
+                  })
+                  .on('mouseout', function () {
+                    tooltip.style('display', 'none')
+                    tooltip.node()._lastShift = undefined
+                    d3.select(this).classed('hovered', false)
+                  })
+              } else {
+                rect.style('fill', 'transparent')
+              }
+              return
+            }
+
+            // For Collapsed blocks only show visuals, ignore onClickHandler
             if (isRowCollapsed && isColCollapsed) {
               g.append('rect')
                 .attr('x', x)
@@ -651,7 +702,6 @@ export default {
 
             if (isRowCollapsed) {
               const gradId = `row-grad-${key}`
-              // Map the gradient colors top-down to match visual orientation
               const reversedRowIndices = [...rowIndices].reverse()
               addLinearGradient(
                 defs,
@@ -683,41 +733,6 @@ export default {
                 .attr('shape-rendering', 'geometricPrecision')
               return
             }
-
-            const i = rowIndices[0]
-            const j = colIndices[0]
-            const d = cellLookup.get(`${i},${j}`)
-            if (!d || d.value === 0) return
-
-            g.append('rect')
-              .attr('x', x)
-              .attr('y', y)
-              .attr('width', width)
-              .attr('height', height)
-              .attr('shape-rendering', 'geometricPrecision')
-              .on('click', onClickHandler)
-              .on('mouseover', function (event) {
-                d3.select(this).classed('hovered', true)
-                showTooltip(event, d)
-              })
-              .on('mousemove', function (event) {
-                const shiftNow = event.shiftKey
-                const tooltipEl = tooltip.node()
-
-                if (tooltipEl._lastShift !== shiftNow) {
-                  tooltipEl._lastShift = shiftNow
-                  showTooltip(event, d)
-                }
-
-                tooltip.style('left', event.pageX + 12 + 'px').style('top', event.pageY + 12 + 'px')
-              })
-              .on('mouseout', function () {
-                tooltip.style('display', 'none')
-                tooltip.node()._lastShift = undefined
-                d3.select(this).classed('hovered', false)
-              })
-              .style('fill', cellColor(d))
-              .style('opacity', () => (!isLightMode ? highlightOpacity(d) : 1))
           })
         })
       } else {
