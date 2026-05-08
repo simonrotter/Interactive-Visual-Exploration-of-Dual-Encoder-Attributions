@@ -17,7 +17,16 @@
     ></div>
 
     <div style="display: flex">
-      <div ref="chart"></div>
+      <div>
+        <div ref="chart"></div>
+        <p class="ml-16 mb-2">Collapsed display mode</p>
+        <MultitextToggle
+          v-model="combineCollapsedBands"
+          :labels="['Individual', 'Combined']"
+          class="ml-16"
+        />
+      </div>
+
       <div
         style="width: 450px; height: 100%"
         class="bg-neutral-200 dark:bg-neutral-700 p-2 rounded-[15px] ml-10 mb-3"
@@ -43,7 +52,10 @@
           @mousedown.stop
           @mouseup.stop
           @click.stop
-          v-if="attributionModel.tokens_a_categorized || attributionModel.tokens_b_categorized"
+          v-if="
+            (attributionModel.tokens_a_categorized || attributionModel.tokens_b_categorized) &&
+            props.advancedView == 1
+          "
         >
           <PosSelector
             :attributionModel="attributionModel"
@@ -99,6 +111,10 @@ export default {
     selection: {
       type: Object,
       required: true,
+    },
+    advancedView: {
+      type: Object,
+      required: false,
     },
   },
   setup(props, { emit }) {
@@ -162,56 +178,177 @@ export default {
       return filtered
     }
 
+    const combineCollapsedBands = ref(1)
+
+    const COLLAPSED_SLOT_SIZE = 6
+    const MAX_GRADIENT_STOPS = 4
+
+    function toVisualRowIndex(modelRowIndex) {
+      return (props.attributionModel.tokens_a?.length ?? 0) - 1 - modelRowIndex
+    }
+
+    function meanColor(colors, fallback = '#ffffff') {
+      const valid = colors.map((c) => d3.color(c)).filter((c) => c !== null)
+      if (!valid.length) return fallback
+
+      const sum = valid.reduce(
+        (acc, c) => {
+          acc.r += c.r
+          acc.g += c.g
+          acc.b += c.b
+          return acc
+        },
+        { r: 0, g: 0, b: 0 },
+      )
+
+      return d3.rgb(sum.r / valid.length, sum.g / valid.length, sum.b / valid.length).formatRgb()
+    }
+
+    function compressColors(colors) {
+      if (colors.length <= MAX_GRADIENT_STOPS) return colors
+
+      const out = []
+      for (let k = 0; k < MAX_GRADIENT_STOPS; k++) {
+        const start = Math.floor((k * colors.length) / MAX_GRADIENT_STOPS)
+        const end = Math.max(start + 1, Math.floor(((k + 1) * colors.length) / MAX_GRADIENT_STOPS))
+        out.push(meanColor(colors.slice(start, end)))
+      }
+      return out
+    }
+
+    function addLinearGradient(defs, id, colors, vertical) {
+      defs.select(`#${id}`).remove()
+
+      const gradient = defs.append('linearGradient').attr('id', id)
+      if (vertical) {
+        gradient.attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%')
+      } else {
+        gradient.attr('x1', '0%').attr('y1', '0%').attr('x2', '100%').attr('y2', '0%')
+      }
+
+      const stops = compressColors(colors)
+      const denom = Math.max(stops.length - 1, 1)
+
+      stops.forEach((color, idx) => {
+        gradient
+          .append('stop')
+          .attr('offset', `${(idx / denom) * 100}%`)
+          .attr('stop-color', color)
+      })
+    }
+
+    function buildAxisLayout(totalCount, collapsedIndices, totalSize, reverse = false) {
+      const collapsedSet = new Set(collapsedIndices)
+      const slots = []
+
+      for (let i = 0; i < totalCount; ) {
+        if (!collapsedSet.has(i)) {
+          slots.push({ indices: [i], collapsed: false, size: 0, start: 0 })
+          i += 1
+          continue
+        }
+
+        let j = i
+        while (j + 1 < totalCount && collapsedSet.has(j + 1)) j += 1
+
+        slots.push({
+          indices: Array.from({ length: j - i + 1 }, (_, k) => i + k),
+          collapsed: true,
+          size: COLLAPSED_SLOT_SIZE,
+          start: 0,
+        })
+
+        i = j + 1
+      }
+
+      const fixed = slots.filter((s) => s.collapsed).reduce((sum, s) => sum + s.size, 0)
+      const flexCount = slots.filter((s) => !s.collapsed).length
+      const flexSize = flexCount ? Math.max((totalSize - fixed) / flexCount, 0) : 0
+
+      // Start cursor at bottom if reversing (for Y-axis)
+      let cursor = reverse ? totalSize : 0
+      const indexToSlot = new Map()
+
+      for (const slot of slots) {
+        if (!slot.collapsed) slot.size = flexSize
+
+        if (reverse) {
+          cursor -= slot.size
+          slot.start = cursor
+        } else {
+          slot.start = cursor
+          cursor += slot.size
+        }
+
+        for (const idx of slot.indices) indexToSlot.set(idx, slot)
+      }
+
+      return { slots, indexToSlot }
+    }
+
     //calalates the whole positions of matrix elements
     function getAdjustedScales() {
-      const tokens_a = props.attributionModel.tokens_a
-      const tokens_b = props.attributionModel.tokens_b
+      const tokens_a = props.attributionModel.tokens_a ?? []
+      const tokens_b = props.attributionModel.tokens_b ?? []
 
-      const collapseSize = 6
+      if (combineCollapsedBands.value != 1) {
+        const collapseSize = 6
 
-      //compute widths of columns (normal or collapsed)
-      const columnWidths = (tokens_b ?? []).map((_, j) =>
-        collapsed.value.columns.includes(j)
-          ? collapseSize
-          : (chartWidth - collapseSize * collapsed.value.columns.length) /
-            (tokens_b.length - collapsed.value.columns.length),
-      )
+        const columnWidths = tokens_b.map((_, j) =>
+          collapsed.value.columns.includes(j)
+            ? collapseSize
+            : (chartWidth - collapseSize * collapsed.value.columns.length) /
+              (tokens_b.length - collapsed.value.columns.length),
+        )
 
-      //compute heights of rows
-      const rowHeights = (tokens_a ?? []).map((_, i) =>
-        collapsed.value.rows.includes(props.attributionModel.tokens_a?.length - i - 1)
-          ? collapseSize
-          : (chartHeight - collapseSize * collapsed.value.rows.length) /
-            (tokens_a.length - collapsed.value.rows.length),
-      )
+        const rowHeights = tokens_a.map((_, i) =>
+          collapsed.value.rows.includes(props.attributionModel.tokens_a?.length - i - 1)
+            ? collapseSize
+            : (chartHeight - collapseSize * collapsed.value.rows.length) /
+              (tokens_a.length - collapsed.value.rows.length),
+        )
 
-      //new positions of collumns
-      const xPositions = []
-      let cumX = 0
-      for (let j = 0; j < tokens_b?.length; j++) {
-        xPositions.push(cumX)
-        cumX += columnWidths[j]
+        const xPositions = []
+        let cumX = 0
+        for (let j = 0; j < tokens_b.length; j++) {
+          xPositions.push(cumX)
+          cumX += columnWidths[j]
+        }
+
+        const yPositions = []
+        let cumY = 0
+        for (let i = tokens_a.length - 1; i >= 0; i--) {
+          yPositions[i] = cumY
+          cumY += rowHeights[i]
+        }
+
+        const xScale = (index) => xPositions[index]
+        xScale.bandwidth = () => 0
+        xScale.bandwidthAt = (index) => columnWidths[index]
+
+        const yScale = (index) => yPositions[index]
+        yScale.bandwidth = () => 0
+        yScale.bandwidthAt = (index) => rowHeights[index]
+
+        return { xScale, yScale, rowLayout: null, colLayout: null }
       }
 
-      //positions comulation of rows
-      const yPositions = []
-      let cumY = 0
-      for (let i = tokens_a?.length - 1; i >= 0; i--) {
-        //a is reveresd, keep
-        yPositions[i] = cumY
-        cumY += rowHeights[i]
-      }
+      const rowCollapsedVisual = collapsed.value.rows.map((modelIdx) => toVisualRowIndex(modelIdx))
+      const colCollapsedVisual = collapsed.value.columns
 
-      //map indices to positions
-      const xScale = (index) => xPositions[index]
+      // Add "true" to reverse the layout from top-down to bottom-up
+      const rowLayout = buildAxisLayout(tokens_a.length, rowCollapsedVisual, chartHeight, true)
+      const colLayout = buildAxisLayout(tokens_b.length, colCollapsedVisual, chartWidth)
+
+      const xScale = (index) => colLayout.indexToSlot.get(index)?.start ?? 0
       xScale.bandwidth = () => 0
-      xScale.bandwidthAt = (index) => columnWidths[index]
+      xScale.bandwidthAt = (index) => colLayout.indexToSlot.get(index)?.size ?? 0
 
-      const yScale = (index) => yPositions[index]
+      const yScale = (index) => rowLayout.indexToSlot.get(index)?.start ?? 0
       yScale.bandwidth = () => 0
-      yScale.bandwidthAt = (index) => rowHeights[index]
+      yScale.bandwidthAt = (index) => rowLayout.indexToSlot.get(index)?.size ?? 0
 
-      return { xScale, yScale }
+      return { xScale, yScale, rowLayout, colLayout }
     }
 
     function highlightOpacity(d) {
@@ -263,9 +400,8 @@ export default {
         .append('g')
         .attr('transform', `translate(${chartMargin.left},${chartMargin.top})`)
 
-      const { xScale, yScale } = getAdjustedScales()
+      const { xScale, yScale, rowLayout, colLayout } = getAdjustedScales()
 
-      //Axis with adjusted ticks and positions
       const xAxisScale = d3
         .scaleOrdinal()
         .domain((tokens_b ?? []).map((_, j) => j))
@@ -276,9 +412,7 @@ export default {
         .domain((tokens_a ?? []).map((_, i) => i))
         .range((tokens_a ?? []).map((_, i) => yScale(i) + yScale.bandwidthAt(i) / 2))
 
-      //show all labels, but later set opacity of collapsed 0 so its there and clickablebut hidden
       const xAxis = d3.axisBottom(xAxisScale).tickFormat((j) => tokens_b[j])
-
       const yAxis = d3.axisLeft(yAxisScale).tickFormat((i) => tokens_a[i])
 
       const xAxisG = g
@@ -286,7 +420,7 @@ export default {
         .attr('transform', `translate(0,${chartHeight})`)
         .call(xAxis)
         .attr('transform', `translate(0,${chartHeight + 5})`)
-        .call((g) => g.select('.domain').attr('d', `M-5,0H${chartWidth}`)) //force domain line full width shifted doesn 5px
+        .call((g) => g.select('.domain').attr('d', `M-5,0H${chartWidth}`))
 
       xAxisG
         .selectAll('text')
@@ -314,9 +448,8 @@ export default {
         .append('g')
         .call(yAxis)
         .attr('transform', `translate(-5,0)`)
-        .call((g) => g.select('.domain').attr('d', `M0,0V${chartHeight + 5}`)) //force domain line full height shiften left 5px
+        .call((g) => g.select('.domain').attr('d', `M0,0V${chartHeight + 5}`))
 
-      //opacity is 0 when its collapsed, but still 1 if hovered
       yAxisG
         .selectAll('text')
         .style('opacity', (i) =>
@@ -361,8 +494,7 @@ export default {
         .domain([-selectedMax * 2.2, 0, selectedMax * 2.2])
         .range(['blue', 'white', 'red'])
 
-      //Define hatching patterns once
-      svg.select('defs').remove() //clear old defs
+      svg.select('defs').remove()
       const defs = svg.append('defs')
 
       defs
@@ -414,12 +546,9 @@ export default {
       }
 
       const mergedData = Array.from(cellMap.values())
-
       const tooltip = d3.select('#matrix-tooltip')
-
       const rectPadding = 2
 
-      //position helpers
       function getX(d) {
         return xScale(d.j) + rectPadding / 2
       }
@@ -433,9 +562,45 @@ export default {
         return Math.max(yScale.bandwidthAt(d.i) - rectPadding, 0)
       }
 
+      function cellColor(d) {
+        const color =
+          d.group === 'selected'
+            ? selectedColorScale(d.value)
+            : d.group === 'excluded'
+              ? excludedColorScale(d.value)
+              : unselectedColorScale(d.value)
+
+        if (highlightOpacity(d) === 'dim' && isLightMode) {
+          return d3.color(color).darker(1.4).formatRgb()
+        }
+        return color
+      }
+
+      const cellLookup = new Map()
+      for (const d of mergedData) {
+        cellLookup.set(`${d.i},${d.j}`, d)
+      }
+
+      function colorAt(i, j) {
+        const d = cellLookup.get(`${i},${j}`)
+        if (!d) return '#ffffff'
+        return cellColor(d)
+      }
+
+      function blockMeanColor(rowIndices, colIndices) {
+        return meanColor(rowIndices.flatMap((i) => colIndices.map((j) => colorAt(i, j))))
+      }
+
+      function rowGradientColors(rowIndices, colIndices) {
+        return rowIndices.map((i) => meanColor(colIndices.map((j) => colorAt(i, j))))
+      }
+
+      function colGradientColors(rowIndices, colIndices) {
+        return colIndices.map((j) => meanColor(rowIndices.map((i) => colorAt(i, j))))
+      }
+
       function showTooltip(event, d) {
         const shiftHeld = event.shiftKey
-
         let token, posTag
 
         if (shiftHeld) {
@@ -458,124 +623,215 @@ export default {
         tooltip.html(html).style('display', 'block')
       }
 
-      //Selected
-      g.selectAll('.data-point-selected')
-        .data(mergedData.filter((d) => d.group === 'selected'))
-        .enter()
-        .append('rect')
-        .attr('class', 'data-point-selected')
-        .attr('x', getX)
-        .attr('y', getY)
-        .attr('width', getWidth)
-        .attr('height', getHeight)
-        .on('click', onClickHandler)
-        .on('mouseover', function (event, d) {
-          d3.select(this).classed('hovered', true)
-          showTooltip(event, d)
-        })
-        .on('mousemove', function (event, d) {
-          const shiftNow = event.shiftKey
-          const tooltipEl = tooltip.node()
+      if (combineCollapsedBands.value == 1) {
+        rowLayout.slots.forEach((rowSlot) => {
+          colLayout.slots.forEach((colSlot) => {
+            const rowIndices = rowSlot.indices
+            const colIndices = colSlot.indices
 
-          //detect shift key change while hovering only on move mabye add trigger later
-          if (tooltipEl._lastShift !== shiftNow) {
-            tooltipEl._lastShift = shiftNow
+            const x = colSlot.start + rectPadding / 2
+            const y = rowSlot.start + rectPadding / 2
+            const width = Math.max(colSlot.size - rectPadding, 0)
+            const height = Math.max(rowSlot.size - rectPadding, 0)
+
+            const key = `${rowIndices[0]}-${rowIndices[rowIndices.length - 1]}_${colIndices[0]}-${colIndices[colIndices.length - 1]}`
+            const isRowCollapsed = rowSlot.collapsed
+            const isColCollapsed = colSlot.collapsed
+
+            if (isRowCollapsed && isColCollapsed) {
+              g.append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', width)
+                .attr('height', height)
+                .attr('fill', blockMeanColor(rowIndices, colIndices))
+                .attr('shape-rendering', 'geometricPrecision')
+              return
+            }
+
+            if (isRowCollapsed) {
+              const gradId = `row-grad-${key}`
+              // Map the gradient colors top-down to match visual orientation
+              const reversedRowIndices = [...rowIndices].reverse()
+              addLinearGradient(
+                defs,
+                gradId,
+                rowGradientColors(reversedRowIndices, colIndices),
+                true,
+              )
+
+              g.append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', width)
+                .attr('height', height)
+                .attr('fill', `url(#${gradId})`)
+                .attr('shape-rendering', 'geometricPrecision')
+              return
+            }
+
+            if (isColCollapsed) {
+              const gradId = `col-grad-${key}`
+              addLinearGradient(defs, gradId, colGradientColors(rowIndices, colIndices), false)
+
+              g.append('rect')
+                .attr('x', x)
+                .attr('y', y)
+                .attr('width', width)
+                .attr('height', height)
+                .attr('fill', `url(#${gradId})`)
+                .attr('shape-rendering', 'geometricPrecision')
+              return
+            }
+
+            const i = rowIndices[0]
+            const j = colIndices[0]
+            const d = cellLookup.get(`${i},${j}`)
+            if (!d || d.value === 0) return
+
+            g.append('rect')
+              .attr('x', x)
+              .attr('y', y)
+              .attr('width', width)
+              .attr('height', height)
+              .attr('shape-rendering', 'geometricPrecision')
+              .on('click', onClickHandler)
+              .on('mouseover', function (event) {
+                d3.select(this).classed('hovered', true)
+                showTooltip(event, d)
+              })
+              .on('mousemove', function (event) {
+                const shiftNow = event.shiftKey
+                const tooltipEl = tooltip.node()
+
+                if (tooltipEl._lastShift !== shiftNow) {
+                  tooltipEl._lastShift = shiftNow
+                  showTooltip(event, d)
+                }
+
+                tooltip.style('left', event.pageX + 12 + 'px').style('top', event.pageY + 12 + 'px')
+              })
+              .on('mouseout', function () {
+                tooltip.style('display', 'none')
+                tooltip.node()._lastShift = undefined
+                d3.select(this).classed('hovered', false)
+              })
+              .style('fill', cellColor(d))
+              .style('opacity', () => (!isLightMode ? highlightOpacity(d) : 1))
+          })
+        })
+      } else {
+        g.selectAll('.data-point-selected')
+          .data(mergedData.filter((d) => d.group === 'selected'))
+          .enter()
+          .append('rect')
+          .attr('class', 'data-point-selected')
+          .attr('x', getX)
+          .attr('y', getY)
+          .attr('width', getWidth)
+          .attr('height', getHeight)
+          .on('click', onClickHandler)
+          .on('mouseover', function (event, d) {
+            d3.select(this).classed('hovered', true)
             showTooltip(event, d)
-          }
+          })
+          .on('mousemove', function (event, d) {
+            const shiftNow = event.shiftKey
+            const tooltipEl = tooltip.node()
+            if (tooltipEl._lastShift !== shiftNow) {
+              tooltipEl._lastShift = shiftNow
+              showTooltip(event, d)
+            }
+            tooltip.style('left', event.pageX + 12 + 'px').style('top', event.pageY + 12 + 'px')
+          })
+          .on('mouseout', function () {
+            tooltip.style('display', 'none')
+            tooltip.node()._lastShift = undefined
+            d3.select(this).classed('hovered', false)
+          })
+          .style('fill', (d) => {
+            const color = selectedColorScale(d.value)
+            if (highlightOpacity(d) === 'dim' && isLightMode) {
+              return d3.color(color).darker(1.4).formatRgb()
+            }
+            return color
+          })
+          .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
 
-          tooltip.style('left', event.pageX + 12 + 'px').style('top', event.pageY + 12 + 'px')
-        })
-        .on('mouseout', function () {
-          tooltip.style('display', 'none')
-          tooltip.node()._lastShift = undefined
-          d3.select(this).classed('hovered', false)
-        })
-        .style('fill', (d) => {
-          const color = selectedColorScale(d.value)
-          if (highlightOpacity(d) === 'dim' && isLightMode) {
-            return d3.color(color).darker(1.4).formatRgb() //darken unhighlighted cells
-          }
-          return color
-        })
-        .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
+        g.selectAll('.data-point-unselected-base')
+          .data(mergedData.filter((d) => d.group === 'unselected'))
+          .enter()
+          .append('rect')
+          .attr('class', 'data-point-unselected-base')
+          .attr('x', getX)
+          .attr('y', getY)
+          .attr('width', getWidth)
+          .attr('height', getHeight)
+          .style('fill', (d) => {
+            const color = unselectedColorScale(d.value)
+            if (highlightOpacity(d) === 'dim') {
+              return isLightMode ? d3.color(color).darker(1.4).formatRgb() : color
+            }
+            return color
+          })
+          .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
+          .on('click', onClickHandler)
 
-      //Unselected base
-      g.selectAll('.data-point-unselected-base')
-        .data(mergedData.filter((d) => d.group === 'unselected'))
-        .enter()
-        .append('rect')
-        .attr('class', 'data-point-unselected-base')
-        .attr('x', getX)
-        .attr('y', getY)
-        .attr('width', getWidth)
-        .attr('height', getHeight)
-        .style('fill', (d) => {
-          const color = unselectedColorScale(d.value)
-          if (highlightOpacity(d) === 'dim') {
-            return isLightMode ? d3.color(color).darker(1.4).formatRgb() : color
-          }
-          return color
-        })
-        .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
-        .on('click', onClickHandler)
+        g.selectAll('.data-point-unselected-hatch')
+          .data(mergedData.filter((d) => d.group === 'unselected'))
+          .enter()
+          .append('rect')
+          .attr('class', 'data-point-unselected-hatch')
+          .attr('x', getX)
+          .attr('y', getY)
+          .attr('width', getWidth)
+          .attr('height', getHeight)
+          .style('fill', 'url(#diagonalHatchWhite)')
+          .style('opacity', (d) => {
+            if (highlightOpacity(d) === 'dim') {
+              return isLightMode ? 0.15 : highlightOpacity(d)
+            }
+            return 1
+          })
+          .on('click', onClickHandler)
 
-      //Unselected hatch overlay
-      g.selectAll('.data-point-unselected-hatch')
-        .data(mergedData.filter((d) => d.group === 'unselected'))
-        .enter()
-        .append('rect')
-        .attr('class', 'data-point-unselected-hatch')
-        .attr('x', getX)
-        .attr('y', getY)
-        .attr('width', getWidth)
-        .attr('height', getHeight)
-        .style('fill', 'url(#diagonalHatchWhite)')
-        .style('opacity', (d) => {
-          if (highlightOpacity(d) === 'dim') {
-            return isLightMode ? 0.15 : highlightOpacity(d) //dim hatch lightly in light mode
-          }
-          return 1
-        })
-        .on('click', onClickHandler)
+        g.selectAll('.data-point-excluded-base')
+          .data(mergedData.filter((d) => d.group === 'excluded'))
+          .enter()
+          .append('rect')
+          .attr('class', 'data-point-excluded-base')
+          .attr('x', getX)
+          .attr('y', getY)
+          .attr('width', getWidth)
+          .attr('height', getHeight)
+          .style('fill', (d) => {
+            const color = excludedColorScale(d.value)
+            if (highlightOpacity(d) === 'dim') {
+              return isLightMode ? d3.color(color).darker(1.4).formatRgb() : color
+            }
+            return color
+          })
+          .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
+          .on('click', onClickHandler)
 
-      //Excluded base
-      g.selectAll('.data-point-excluded-base')
-        .data(mergedData.filter((d) => d.group === 'excluded'))
-        .enter()
-        .append('rect')
-        .attr('class', 'data-point-excluded-base')
-        .attr('x', getX)
-        .attr('y', getY)
-        .attr('width', getWidth)
-        .attr('height', getHeight)
-        .style('fill', (d) => {
-          const color = excludedColorScale(d.value)
-          if (highlightOpacity(d) === 'dim') {
-            return isLightMode ? d3.color(color).darker(1.4).formatRgb() : color
-          }
-          return color
-        })
-        .style('opacity', (d) => (!isLightMode ? highlightOpacity(d) : 1))
-        .on('click', onClickHandler)
-
-      //Excluded hatch overlay
-      g.selectAll('.data-point-excluded-hatch')
-        .data(mergedData.filter((d) => d.group === 'excluded'))
-        .enter()
-        .append('rect')
-        .attr('class', 'data-point-excluded-hatch')
-        .attr('x', getX)
-        .attr('y', getY)
-        .attr('width', getWidth)
-        .attr('height', getHeight)
-        .style('fill', 'url(#diagonalHatchBlack)')
-        .style('opacity', (d) => {
-          if (highlightOpacity(d) === 'dim') {
-            return isLightMode ? 0.15 : highlightOpacity(d) //light dim hatch in light mode
-          }
-          return 1
-        })
-        .on('click', onClickHandler)
+        g.selectAll('.data-point-excluded-hatch')
+          .data(mergedData.filter((d) => d.group === 'excluded'))
+          .enter()
+          .append('rect')
+          .attr('class', 'data-point-excluded-hatch')
+          .attr('x', getX)
+          .attr('y', getY)
+          .attr('width', getWidth)
+          .attr('height', getHeight)
+          .style('fill', 'url(#diagonalHatchBlack)')
+          .style('opacity', (d) => {
+            if (highlightOpacity(d) === 'dim') {
+              return isLightMode ? 0.15 : highlightOpacity(d)
+            }
+            return 1
+          })
+          .on('click', onClickHandler)
+      }
 
       highlightSelection(props.selection)
     }
@@ -681,6 +937,13 @@ export default {
         collapseLowAttributionRowsAndColumns()
       },
       { deep: true },
+    )
+
+    watch(
+      () => combineCollapsedBands.value,
+      () => {
+        createChart()
+      },
     )
 
     watch(
@@ -794,7 +1057,9 @@ export default {
     )
 
     return {
+      props,
       chart,
+      combineCollapsedBands,
       collapseLowAttributionRowsAndColumns,
       collapseThreshold,
       collapseThresholdText,

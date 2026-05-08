@@ -18,7 +18,7 @@ import StateToggle from './3StateToggle.vue'
 const props = defineProps({
   attributionModel: Object,
   collapsed: Object,
-  preventAllDeselect: (Boolean = true),
+  preventAllDeselect: Boolean,
 })
 
 const emit = defineEmits(['update:collapsed'])

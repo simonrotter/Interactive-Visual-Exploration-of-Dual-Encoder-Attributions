@@ -36,7 +36,7 @@
       </select>
     </div>
     <div style="margin-top: 100px">
-      <div v-if="advancedView == 1">
+      <div>
         <div style="display: flex">
           <TwoDChart
             ref="attributionChart"
@@ -44,11 +44,13 @@
             :bounds="histogramBounds"
             :negativeBounds="histogramNegativeBounds"
             :selection="selectedTokens"
+            :advancedView="advancedView"
             @selection-changed="handleSelectionChanged"
             class="mr-16"
           />
 
           <HistogramSlider
+            v-if="advancedView == 1"
             :histogramData="textTokenModel?.attributions ?? []"
             @range-changed="handleRangeChanged"
             @negative-range-changed="handleNegativeHistogramBoundsChanged"
